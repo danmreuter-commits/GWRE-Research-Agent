@@ -2,11 +2,16 @@
 Research engine: breaks the daily scan into 3 focused search blocks that run
 sequentially, avoiding rate-limit errors caused by one massive API call.
 
-Each block uses claude-sonnet-4-6 (cheaper, same search quality) with a
-short, targeted prompt. A 15-second pause between blocks keeps token-per-
-minute usage well within Anthropic's standard rate limits.
+Each block uses claude-sonnet-4-6 with a short, targeted prompt.
+A 15-second pause between blocks keeps token-per-minute usage well within
+Anthropic's standard rate limits.
 
-claude-opus-4-6 is NOT used here — only in emailer.py for the final digest.
+Threat-vector framing (reflected in search blocks):
+  1. Core replacement competitors (Duck Creek, Socotra, EIS, BriteCore, Instanda, Openkoda)
+  2. Unbundlers / workflow attackers — HIGHEST PRIORITY (Federato, Sixfold, Cytora, Send,
+     Shift Technology, Indico Data, Gradient AI)
+  3. Market signals + horizontal disruptors (AgentSync, Novidea, Combined Ratio Solutions,
+     Sureify) + VC activity
 """
 
 import logging
@@ -20,31 +25,35 @@ from data.competitors import (
     COMPETITOR_DOMAIN_KEYWORDS,
     DIRECT_COMPETITOR_NAMES,
     INDIRECT_COMPETITOR_NAMES,
+    UNBUNDLER_NAMES,
 )
 
 logger = logging.getLogger(__name__)
 
-# ── Compact system prompt (sent with every search block) ─────────────────────
-# Kept short on purpose — the full competitor context is NOT needed here.
-# Each block prompt carries its own specific instructions.
+# ── Compact system prompt ─────────────────────────────────────────────────────
 
 _SEARCH_SYSTEM = """\
 You are a competitive intelligence analyst for Guidewire Software (GWRE), \
 the #1 P&C insurance core system (policy admin, billing, claims).
 
-DIRECT competitors: Duck Creek Technologies, Majesco, Sapiens International, \
-Insurity, OneShield, EIS Group, Socotra, Instanda, FINEOS, Applied Systems.
+THREAT VECTOR 1 — Core replacement: Duck Creek Technologies, Majesco, Sapiens International, \
+Insurity, OneShield, EIS Group, Socotra, Instanda, BriteCore, Openkoda.
 
-INDIRECT competitors (AI point solutions expanding into core territory): \
-Shift Technology, Gradient AI, Snapsheet, Five Sigma, CLARA Analytics, \
-Tractable, Betterview, Cape Analytics, CCC Intelligent Solutions.
+THREAT VECTOR 2 — Unbundlers (HIGHEST PRIORITY — wedge into workflows, risk commoditizing Guidewire): \
+Federato, Sixfold, Indico Data, Shift Technology, Cytora, Send Technology Solutions, Gradient AI, \
+Snapsheet, Five Sigma, CLARA Analytics, Tractable.
+
+THREAT VECTOR 3 — Horizontal/architectural disruptors: Combined Ratio Solutions, Sureify, \
+AgentSync, Novidea, Appian, Salesforce Financial Services Cloud.
 
 For each finding, output one line in this EXACT format (pipe-delimited):
 FINDING|||[Company]|||[investment|product|metrics|partnership|platform_shift|vc_signal]|||[HIGH|MEDIUM]|||[VC firm or N/A]|||[One sentence with key detail: $amount, product name, carrier name, etc.]|||[Source URL]
 
-HIGH relevance: direct competitor funding/product/customer win; carrier leaving Guidewire; \
-AI tool expanding into full platform.
-MEDIUM relevance: insurtech Series B+ for claims/policy/billing; VC blog about core-system disruption.
+HIGH relevance: unbundler raises funding / wins Tier 1 carrier / expands product scope; \
+direct competitor wins carrier switching from Guidewire; SI steers client away from Guidewire; \
+horizontal disruptor gains major carrier adoption.
+MEDIUM relevance: insurtech Series B+ for underwriting/claims/policy/billing; VC blog about \
+core-system disruption; unbundler integrates with Guidewire (watch for scope creep).
 Do NOT output LOW relevance findings.
 When done searching, output: BLOCK_COMPLETE
 """
@@ -54,7 +63,7 @@ When done searching, output: BLOCK_COMPLETE
 def _date_range() -> str:
     today    = datetime.now()
     week_ago = today - timedelta(days=7)
-    return f"{week_ago.strftime('%B %d')}–{today.strftime('%B %d, %Y')}"
+    return f"{week_ago.strftime('%B %d')}\u2013{today.strftime('%B %d, %Y')}"
 
 
 _SEARCH_BLOCKS = [
@@ -62,53 +71,66 @@ _SEARCH_BLOCKS = [
         "name": "direct_competitors",
         "prompt_template": """\
 Search for news from the past 7 days ({date_range}) about these \
-Guidewire direct competitors:
+Guidewire core-replacement competitors:
 
-• Duck Creek Technologies — product news, funding, customer wins
-• Majesco (MJCO) — earnings, new releases, customer announcements
-• Sapiens International (SPNS) — M&A, product, customer news
-• Insurity — funding, product, partnerships
-• OneShield / EIS Group — new deals or product launches
-• Socotra — funding rounds, new carrier customers, product updates
-• Instanda — funding, growth metrics, new markets
+\u2022 Duck Creek Technologies \u2014 product news, funding, customer wins
+\u2022 Majesco (MJCO) \u2014 earnings, new releases, customer announcements
+\u2022 Sapiens International (SPNS) \u2014 M&A, product, customer news
+\u2022 Insurity \u2014 funding, product, partnerships
+\u2022 EIS Group \u2014 new deals, product launches, carrier wins
+\u2022 Socotra \u2014 funding rounds, new carrier customers, product updates
+\u2022 Instanda \u2014 funding, growth metrics, new markets
+\u2022 BriteCore \u2014 funding, new carrier customers, product news
+\u2022 Openkoda \u2014 adoption news, carrier announcements, open-source traction
 
-Search for each company name + "news" or "announcement" or "funding" 2025 2026.
-Output all HIGH and MEDIUM relevance FINDING||| lines you find, then: BLOCK_COMPLETE""",
+Search each company + \"news\" OR \"announcement\" OR \"funding\" OR \"customer\" 2025 2026.
+Output all HIGH and MEDIUM relevance FINDING||| lines, then: BLOCK_COMPLETE""",
     },
     {
-        "name": "ai_insurtech_and_vc",
+        "name": "unbundlers_workflow_attackers",
         "prompt_template": """\
-Search for news from the past 7 days ({date_range}) about:
+Search for news from the past 7 days ({date_range}) about these companies \
+that attack Guidewire by owning specific high-value workflows \
+(underwriting, claims decisioning, intake) — the highest-priority competitive category:
 
-PART A — AI insurance companies expanding into core-system territory:
-• Shift Technology — new deals, funding, product expansion
-• Gradient AI — funding, underwriting/claims product news
-• Snapsheet, Five Sigma, CLARA Analytics — funding or product launches
-• Tractable, Betterview, Cape Analytics — new partnerships or funding
+\u2022 Federato \u2014 RiskOps / portfolio underwriting optimization; funding, carrier wins, product expansion
+\u2022 Sixfold \u2014 GenAI underwriting co-pilot; funding, new carrier deployments, product scope expansion
+\u2022 Cytora \u2014 digital risk flow / underwriting workflow; funding, partnerships, carrier traction
+\u2022 Send Technology Solutions \u2014 underwriting workbench; Lloyd's traction, new carrier wins, funding
+\u2022 Indico Data \u2014 submission intake + document processing; funding, carrier deployments
+\u2022 Shift Technology \u2014 claims + fraud + underwriting AI; new deals, product expansion, funding
+\u2022 Gradient AI \u2014 underwriting pricing + claims severity ML; funding, partnerships
+\u2022 Snapsheet \u2014 digital claims management; funding, new carrier wins
+\u2022 Five Sigma \u2014 AI-native claims platform; funding, carrier announcements
+\u2022 CLARA Analytics \u2014 claims AI (litigation, medical); funding or product news
+\u2022 Tractable \u2014 AI claims for accident/disaster recovery; partnerships or expansion
 
-PART B — VC portfolio announcements in insurance tech:
-• Search: "Anthemis" OR "QED Investors" OR "Munich Re Ventures" insurance investment 2026
-• Search: "Nationwide Ventures" OR "XL Innovate" OR "Aquiline" insurtech portfolio news
-• Search: "Insight Partners" OR "TCV" OR "General Catalyst" insurance software investment 2026
-• Search: Ribbit Capital OR Mundi Ventures insurtech 2026
+For each, also search: [company name] + \"Guidewire\" to find any integration announcements \
+(integrations = initial wedge; watch for scope creep into broader platform).
 
 Output all HIGH and MEDIUM relevance FINDING||| lines, then: BLOCK_COMPLETE""",
     },
     {
         "name": "market_signals",
         "prompt_template": """\
-Search for news from the past 7 days ({date_range}) about broader \
-P&C insurance technology market signals:
+Search for news from the past 7 days ({date_range}) about:
 
-• insurtech funding round Series B C D 2026 "policy administration" OR "claims management" OR "billing"
-• insurance carrier "replaced" OR "migrated" OR "switched from" Guidewire
-• new P&C insurance platform startup raised funding 2026
-• Guidewire competitor announcement {month_year}
-• VC partner blog post insurtech investment thesis 2026
+PART A \u2014 Horizontal / architectural disruptors chipping away at Guidewire's integration moat:
+\u2022 Combined Ratio Solutions \u2014 open-source policy admin; carrier adoption, funding, announcements
+\u2022 AgentSync \u2014 insurance compliance + distribution infrastructure; funding, growth, partnerships
+\u2022 Novidea \u2014 broker + MGA platform; new deals, funding, market expansion
+\u2022 Sureify \u2014 customer engagement + digital front-end; carrier wins, funding, product news
 
-Also search for any of these lesser-covered names with recent news:
-Unqork insurance, Appian insurance platform, Lemonade technology platform, \
-Kin Insurance platform, CCC Intelligent Solutions news.
+PART B \u2014 Broader market signals:
+\u2022 insurtech funding round Series B C D 2026 \"underwriting\" OR \"claims management\" OR \"policy administration\"
+\u2022 insurance carrier \"replaced\" OR \"migrated\" OR \"switched from\" Guidewire
+\u2022 Guidewire competitor announcement {month_year}
+\u2022 SI \"Accenture\" OR \"TCS\" OR \"Capgemini\" insurance core system replacement 2026
+
+PART C \u2014 VC signals:
+\u2022 \"Anthemis\" OR \"QED Investors\" OR \"Munich Re Ventures\" insurance investment 2026
+\u2022 \"Nationwide Ventures\" OR \"XL Innovate\" OR \"Aquiline\" insurtech portfolio news
+\u2022 \"Insight Partners\" OR \"TCV\" OR \"General Catalyst\" insurance software investment 2026
 
 Output all HIGH and MEDIUM relevance FINDING||| lines, then: BLOCK_COMPLETE""",
     },
@@ -157,8 +179,8 @@ def _run_block(client: anthropic.Anthropic, block: dict) -> list[dict]:
 
     while continuations <= max_cont:
         response = client.messages.create(
-            model="claude-sonnet-4-6",   # cheaper than Opus; same search quality
-            max_tokens=3000,             # sufficient for focused block output
+            model="claude-sonnet-4-6",
+            max_tokens=3000,
             system=_SEARCH_SYSTEM,
             tools=[{"type": "web_search_20260209", "name": "web_search"}],
             messages=messages,
@@ -183,51 +205,45 @@ def _run_block(client: anthropic.Anthropic, block: dict) -> list[dict]:
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-BLOCK_PAUSE_SECONDS = 15   # pause between blocks to stay within rate limits
+BLOCK_PAUSE_SECONDS = 15
 
 
 def run_research() -> list[dict]:
     """
     Run daily research across 3 sequential focused search blocks.
-
-    Using claude-sonnet-4-6 per block keeps each call small enough to
-    avoid rate-limit errors. Blocks run sequentially with a 15-second
-    pause between them.
     """
     client = anthropic.Anthropic(
         api_key=config.ANTHROPIC_API_KEY,
-        timeout=180.0,   # 3-minute timeout per block
+        timeout=180.0,
     )
 
     all_findings: list[dict] = []
 
     for i, block in enumerate(_SEARCH_BLOCKS):
         logger.info(
-            "Search block %d/%d — %s", i + 1, len(_SEARCH_BLOCKS), block["name"]
+            "Search block %d/%d \u2014 %s", i + 1, len(_SEARCH_BLOCKS), block["name"]
         )
         try:
             findings = _run_block(client, block)
             all_findings.extend(findings)
-            logger.info("  → %d finding(s)", len(findings))
+            logger.info("  \u2192 %d finding(s)", len(findings))
         except anthropic.RateLimitError:
             logger.warning(
-                "Block '%s' hit rate limit — waiting 60 s then skipping.",
+                "Block '%s' hit rate limit \u2014 waiting 60 s then skipping.",
                 block["name"],
             )
             time.sleep(60)
         except Exception as exc:
             logger.error(
-                "Block '%s' failed (%s) — continuing with remaining blocks.",
+                "Block '%s' failed (%s) \u2014 continuing with remaining blocks.",
                 block["name"], exc,
             )
 
-        # Pause between blocks (skip after the last one)
         if i < len(_SEARCH_BLOCKS) - 1:
-            logger.debug("Pausing %d s before next block …", BLOCK_PAUSE_SECONDS)
+            logger.debug("Pausing %d s before next block \u2026", BLOCK_PAUSE_SECONDS)
             time.sleep(BLOCK_PAUSE_SECONDS)
 
-    # Deduplicate within this run (same company+type from multiple blocks)
-    seen:   set[str]   = set()
+    seen:    set[str]  = set()
     deduped: list[dict] = []
     for f in all_findings:
         key = f"{f['company'].lower()}|{f['type'].lower()}"
@@ -235,11 +251,10 @@ def run_research() -> list[dict]:
             seen.add(key)
             deduped.append(f)
 
-    # HIGH findings first
     deduped.sort(key=lambda f: (0 if f.get("relevance") == "HIGH" else 1))
 
     logger.info(
-        "Research complete — %d unique findings (%d HIGH, %d MEDIUM) across %d blocks",
+        "Research complete \u2014 %d unique findings (%d HIGH, %d MEDIUM) across %d blocks",
         len(deduped),
         sum(1 for f in deduped if f.get("relevance") == "HIGH"),
         sum(1 for f in deduped if f.get("relevance") == "MEDIUM"),
